@@ -71,8 +71,8 @@ class GameMap(object):
         self.light = 0
 
     def get(self, x, y):
-        x = int(x)
-        y = int(y)
+        x = int(math.floor(x))
+        y = int(math.floor(y))
         if x < 0 or x > self.size-1 or y < 0 or y > self.size-1:
             return -1
         return self.wall_grid[y*self.size+x]
@@ -149,7 +149,7 @@ class Camera(object):
         self.resolution = float(resolution)
         self.spacing = self.width/resolution
         self.field_of_view = FIELD_OF_VIEW
-        self.range = 14
+        self.range = 10
         self.light_range = 5
         self.scale = (self.width+self.height)/1200.0
 
