@@ -2,6 +2,7 @@ import os
 import sys
 import math
 import random
+import itertools
 import pygame as pg
 
 from collections import namedtuple
@@ -17,9 +18,11 @@ CIRCLE = 2*math.pi
 SCALE = (SCREEN_SIZE[0]+SCREEN_SIZE[1])/1200.0
 FIELD_OF_VIEW = math.pi*0.4
 NO_WALL = float("inf")
+RAIN_COLOR = (255, 255, 255, 40)
 
 
 RayInfo = namedtuple("RayInfo", ["sin", "cos", "range"])
+WallInfo = namedtuple("WallInfo", ["top", "height"])
 
 
 class Image(object):
@@ -71,38 +74,36 @@ class GameMap(object):
         self.light = 0
 
     def get(self, x, y):
-        x = int(math.floor(x))
-        y = int(math.floor(y))
-        if x < 0 or x > self.size-1 or y < 0 or y > self.size-1:
-            return -1
-        return self.wall_grid[y*self.size+x]
+        point = (int(math.floor(x)), int(math.floor(y)))
+        return self.wall_grid.get(point, -1)
 
     def randomize(self):
-        return [1 if random.random()<0.3 else 0 for _ in range(self.size**2)]
+        coordinates = itertools.product(range(self.size), repeat=2)
+        return {coord : random.random()<0.3 for coord in coordinates}
 
     def cast(self, point, angle, cast_range):
         info = RayInfo(math.sin(angle), math.cos(angle), cast_range)
         return self.ray(info, Origin(point))
 
     def ray(self, info, origin):
-        distance = origin.distance
-        step_x = Step(info.sin, info.cos, origin.x, origin.y)
-        step_y = Step(info.cos, info.sin, origin.y, origin.x, inverted=True)
-        if step_x.length_sq < step_y.length_sq:
-            next_step = self.inspect(info, step_x, 1, 0, distance, step_x.y)
-        else:
-            next_step = self.inspect(info, step_y, 0, 1, distance, step_y.x)
-        if next_step.distance > info.range:
-            return [origin]
-        final = [origin]
-        final.extend(self.ray(info, next_step))
-        return final
+        processed = [origin]
+        while origin.height <= 0 and origin.distance <= info.range:
+            dist = origin.distance
+            step_x = Step(info.sin, info.cos, origin.x, origin.y)
+            step_y = Step(info.cos, info.sin, origin.y, origin.x, invert=True)
+            if step_x.length < step_y.length:
+                next_step = self.inspect(info, step_x, 1, 0, dist, step_x.y)
+            else:
+                next_step = self.inspect(info, step_y, 0, 1, dist, step_y.x)
+            processed.append(next_step)
+            origin = next_step
+        return processed
 
     def inspect(self, info, step, shift_x, shift_y, distance, offset):
         dx = shift_x if info.cos<0 else 0
         dy = shift_y if info.sin<0 else 0
         step.height = self.get(step.x-dx, step.y-dy)
-        step.distance = distance+math.sqrt(step.length_sq)
+        step.distance = distance+step.length
         if shift_x:
             step.shading = 2 if info.cos<0 else 0
         else:
@@ -124,22 +125,22 @@ class Origin(object):
         self.height = height
         self.distance = distance
         self.shading = None
-        self.length_sq = None
+        self.length = None
 
 
 class Step(object):
-    def __init__(self, rise, run, x, y, inverted=False):
+    def __init__(self, rise, run, x, y, invert=False):
         self.shading = None
         self.distance = None
         try:
             dx = math.floor(x+1)-x if run > 0 else math.ceil(x-1)-x
             dy = dx*(rise/run)
-            self.x = y+dy if inverted else x+dx
-            self.y = x+dx if inverted else y+dy
-            self.length_sq = dx**2+dy**2
+            self.x = y+dy if invert else x+dx
+            self.y = x+dx if invert else y+dy
+            self.length = math.hypot(dx, dy)
         except ZeroDivisionError:
             self.x = self.y = None
-            self.length_sq = NO_WALL
+            self.length = NO_WALL
 
 
 class Camera(object):
@@ -149,9 +150,9 @@ class Camera(object):
         self.resolution = float(resolution)
         self.spacing = self.width/resolution
         self.field_of_view = FIELD_OF_VIEW
-        self.range = 10
+        self.range = 8
         self.light_range = 5
-        self.scale = (self.width+self.height)/1200.0
+        self.scale = SCALE
 
     def render(self, player, game_map):
         self.draw_sky(player.direction, game_map.sky_box)
@@ -171,13 +172,6 @@ class Camera(object):
             ray = game_map.cast(point, player.direction+angle, self.range)
             self.draw_column(column, ray, angle, game_map)
 
-    def draw_weapon(self, weapon, paces):
-        bob_x = math.cos(paces*2)*self.scale*6
-        bob_y = math.sin(paces*4)*self.scale*6
-        left = self.width*0.66+bob_x
-        top = self.height*0.6+bob_y
-        self.screen.blit(weapon.image, (left, top))
-
     def draw_column(self, column, ray, angle, game_map):
         texture = game_map.wall_texture
         left = int(math.floor(column*self.spacing))
@@ -185,35 +179,48 @@ class Camera(object):
         hit = 0
         while hit < len(ray) and ray[hit].height <= 0:
             hit += 1
-        for s in range(len(ray)-1, -1, -1):
-            step = ray[s]
-            rain_drops = int(random.random()**3*s)
-            rain = rain_drops>0 and self.project(0.1, angle, step.distance)
-            if s == hit:
+        for ray_index in range(len(ray)-1, -1, -1):
+            step = ray[ray_index]
+            if ray_index == hit:
                 texture_x = int(math.floor(texture.width*step.offset))
                 wall = self.project(step.height, angle, step.distance)
                 image_location = pg.Rect(texture_x, 0, 1, texture.height)
                 image_slice = texture.image.subsurface(image_location)
-                scale = (width, wall[1])
-                scaled = pg.transform.smoothscale(image_slice, scale)
-                self.screen.blit(scaled, (left, wall[0]))
-                shade_value = step.distance+step.shading
-                max_light = shade_value/float(self.light_range-game_map.light)
-                alpha = 255*min(1, max(max_light, 0))
-                light_rect = pg.Rect(left, wall[0], width, wall[1])
-                shade_slice = pg.Surface(light_rect.size).convert_alpha()
-                shade_slice.fill((0,0,0,alpha))
-                self.screen.blit(shade_slice, light_rect)
-            for drop in range(rain_drops):
-                drop = pg.Surface((1,rain[1])).convert_alpha()
-                drop.fill((255,255,255,255*0.15))
-                self.screen.blit(drop, (left, random.random()*rain[0]))
+                scale_rect = pg.Rect(left, wall.top, width, wall.height)
+                scaled = pg.transform.scale(image_slice, scale_rect.size)
+                self.screen.blit(scaled, scale_rect)
+                self.draw_shadow(step, scale_rect, game_map.light)
+            self.draw_rain(step, angle, left, ray_index)
+
+    def draw_shadow(self, step, scale_rect, light):
+        shade_value = step.distance+step.shading
+        max_light = shade_value/float(self.light_range-light)
+        alpha = 255*min(1, max(max_light, 0))
+        shade_slice = pg.Surface(scale_rect.size).convert_alpha()
+        shade_slice.fill((0,0,0,alpha))
+        self.screen.blit(shade_slice, scale_rect)
+
+    def draw_rain(self, step, angle, left, ray_index):
+        rain_drops = int(random.random()**3*ray_index)
+        if rain_drops:
+            rain = self.project(0.1, angle, step.distance)
+            drop = pg.Surface((1,rain.height)).convert_alpha()
+            drop.fill(RAIN_COLOR)
+        for _ in range(rain_drops):
+            self.screen.blit(drop, (left, random.random()*rain.top))
+
+    def draw_weapon(self, weapon, paces):
+        bob_x = math.cos(paces*2)*self.scale*6
+        bob_y = math.sin(paces*4)*self.scale*6
+        left = self.width*0.66+bob_x
+        top = self.height*0.6+bob_y
+        self.screen.blit(weapon.image, (left, top))
 
     def project(self, height, angle, distance):
-        z = distance*math.cos(angle)
+        z = max(distance*math.cos(angle),0.2)
         wall_height = self.height*height/float(z)
         bottom = self.height/float(2)*(1+1/float(z))
-        return (bottom-wall_height, int(wall_height))
+        return WallInfo(bottom-wall_height, int(wall_height))
 
 
 class Control(object):
@@ -234,17 +241,24 @@ class Control(object):
             elif event.type in (pg.KEYDOWN, pg.KEYUP):
                 self.keys = pg.key.get_pressed()
 
+    def update(self, dt):
+        self.game_map.update(dt)
+        self.player.update(self.keys, dt, self.game_map)
+
+    def display_fps(self):
+        """Show the program's FPS in the window handle."""
+        caption = "{} - FPS: {:.2f}".format(CAPTION, self.clock.get_fps())
+        pg.display.set_caption(caption)
+
     def main_loop(self):
         dt = self.clock.tick(self.fps)/1000.0
         while not self.done:
             self.event_loop()
-            self.game_map.update(dt)
-            self.player.update(self.keys, dt, self.game_map)
+            self.update(dt)
             self.camera.render(self.player, self.game_map)
             dt = self.clock.tick(self.fps)/1000.0
             pg.display.update()
-            fps = self.clock.get_fps()
-            pg.display.set_caption("{}: FPS - {:.2f}".format(CAPTION, fps))
+            self.display_fps()
 
 
 def load_resources():
@@ -260,7 +274,6 @@ def load_resources():
 
 
 def main():
-    global KNIFE_IMAGE, WALL_TEXTURE_IMAGE, SKY_BOX_IMAGE
     os.environ["SDL_VIDEO_CENTERED"] = "True"
     pg.init()
     screen = pg.display.set_mode(SCREEN_SIZE)
