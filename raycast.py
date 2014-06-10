@@ -21,31 +21,48 @@ NO_WALL = float("inf")
 RAIN_COLOR = (255, 255, 255, 40)
 
 
-RayInfo = namedtuple("RayInfo", ["sin", "cos", "range"])
+# Semantically meaningful tuples for use in GameMap and Camera class.
+RayInfo = namedtuple("RayInfo", ["sin", "cos"])
 WallInfo = namedtuple("WallInfo", ["top", "height"])
 
 
 class Image(object):
+    """A very basic class that couples an image with its dimensions"""
     def __init__(self, image):
+        """
+        The image argument is a preloaded and converted pg.Surface object.
+        """
         self.image = image
-        self.rect = self.image.get_rect()
-        self.width, self.height = self.rect.size
+        self.width, self.height = self.image.get_size()
 
 
 class Player(object):
+    """Handles the player's position, rotation, and control."""
     def __init__(self, x, y, direction):
+        """
+        The arguments x and y are floating points.  Anything between zero
+        and the game map size is on our generated map.
+        Choosing a point outside this range ensures our player doesn't spawn
+        inside a wall.  The direction argument is the initial angle (given in
+        radians) of the player.
+        """
         self.x = x
         self.y = y
         self.direction = direction
-        self.speed = 3
-        self.rotate_speed = CIRCLE/2  #180 degrees in a second.
-        self.weapon = Image(KNIFE_IMAGE)
-        self.paces = 0
+        self.speed = 3 # Map cells per second.
+        self.rotate_speed = CIRCLE/2  # 180 degrees in a second.
+        self.weapon = Image(IMAGES["knife"])
+        self.paces = 0 # Used for weapon placement.
 
     def rotate(self, angle):
+        """Change the player's direction when appropriate key is pressed."""
         self.direction = (self.direction+angle+CIRCLE)%CIRCLE
 
     def walk(self, distance, game_map):
+        """
+        Calculate the player's next position, and move if he will
+        not end up inside a wall.
+        """
         dx = math.cos(self.direction)*distance
         dy = math.sin(self.direction)*distance
         if game_map.get(self.x+dx, self.y) <= 0:
@@ -55,6 +72,7 @@ class Player(object):
         self.paces += distance
 
     def update(self, keys, dt, game_map):
+        """Execute movement functions if the appropriate key is pressed."""
         if keys[pg.K_LEFT]:
             self.rotate(-self.rotate_speed*dt)
         if keys[pg.K_RIGHT]:
@@ -66,84 +84,115 @@ class Player(object):
 
 
 class GameMap(object):
+    """
+    A class to generate a random map for us; handle ray casting;
+    and provide a method of detecting colissions.
+    """
     def __init__(self, size):
+        """
+        The size argument is an integer which tells us the width and height
+        of our game grid.  For example, a size of 32 will create a 32x32 map.
+        """
         self.size = size
         self.wall_grid = self.randomize()
-        self.sky_box = Image(SKY_BOX_IMAGE)
-        self.wall_texture = Image(WALL_TEXTURE_IMAGE)
+        self.sky_box = Image(IMAGES["sky"])
+        self.wall_texture = Image(IMAGES["texture"])
         self.light = 0
 
     def get(self, x, y):
+        """A method to check if a given coordinate is colliding with a wall."""
         point = (int(math.floor(x)), int(math.floor(y)))
         return self.wall_grid.get(point, -1)
 
     def randomize(self):
+        """
+        Generate our map randomly.  In the code below their is a 30% chance
+        of a cell containing a wall.
+        """
         coordinates = itertools.product(range(self.size), repeat=2)
         return {coord : random.random()<0.3 for coord in coordinates}
 
-    def cast(self, point, angle, cast_range):
-        info = RayInfo(math.sin(angle), math.cos(angle), cast_range)
-        return self.ray(info, Origin(point))
-
-    def ray(self, info, origin):
-        processed = [origin]
-        while origin.height <= 0 and origin.distance <= info.range:
+    def cast_ray(self, point, angle, cast_range):
+        """
+        The meat of our ray casting program.  Given a point,
+        an angle (in radians), and a maximum cast range, check if any
+        collisions with the ray occur.  Casting will stop if a collision is
+        detected (cell with greater than 0 height), or our maximum casting
+        range is exceeded without detecting anything.
+        """
+        info = RayInfo(math.sin(angle), math.cos(angle))
+        origin = Point(point)
+        ray = [origin]
+        while origin.height <= 0 and origin.distance <= cast_range:
             dist = origin.distance
-            step_x = Step(info.sin, info.cos, origin.x, origin.y)
-            step_y = Step(info.cos, info.sin, origin.y, origin.x, invert=True)
+            step_x = origin.step(info.sin, info.cos)
+            step_y = origin.step(info.cos, info.sin, invert=True)
             if step_x.length < step_y.length:
-                next_step = self.inspect(info, step_x, 1, 0, dist, step_x.y)
+                next_step = step_x.inspect(info, self, 1, 0, dist, step_x.y)
             else:
-                next_step = self.inspect(info, step_y, 0, 1, dist, step_y.x)
-            processed.append(next_step)
+                next_step = step_y.inspect(info, self, 0, 1, dist, step_y.x)
+            ray.append(next_step)
             origin = next_step
-        return processed
-
-    def inspect(self, info, step, shift_x, shift_y, distance, offset):
-        dx = shift_x if info.cos<0 else 0
-        dy = shift_y if info.sin<0 else 0
-        step.height = self.get(step.x-dx, step.y-dy)
-        step.distance = distance+step.length
-        if shift_x:
-            step.shading = 2 if info.cos<0 else 0
-        else:
-            step.shading = 2 if info.sin<0 else 1
-        step.offset = offset-math.floor(offset)
-        return step
+        return ray
 
     def update(self, dt):
+        """Adjust ambient lighting based on time."""
         if self.light > 0:
             self.light = max(self.light-10*dt, 0)
         elif random.random()*5 < dt:
             self.light = 2
 
 
-class Origin(object):
-    def __init__(self, point, height=0, distance=0):
+class Point(object):
+    """
+    A fairly basic class to assist us with ray casting.  The return value of
+    the GameMap.cast_ray() method is a list of Point instances.
+    """
+    def __init__(self, point, length=None):
         self.x = point[0]
         self.y = point[1]
-        self.height = height
-        self.distance = distance
+        self.height = 0
+        self.distance = 0
         self.shading = None
-        self.length = None
+        self.length = length
 
-
-class Step(object):
-    def __init__(self, rise, run, x, y, invert=False):
-        self.shading = None
-        self.distance = None
+    def step(self, rise, run, invert=False):
+        """
+        Return a new Point advanced one step from the caller.  If run is
+        zero, the length of the new Point will be infinite.
+        """
         try:
+            x, y = (self.y,self.x) if invert else (self.x,self.y)
             dx = math.floor(x+1)-x if run > 0 else math.ceil(x-1)-x
             dy = dx*(rise/run)
-            self.x = y+dy if invert else x+dx
-            self.y = x+dx if invert else y+dy
-            self.length = math.hypot(dx, dy)
+            next_x = y+dy if invert else x+dx
+            next_y = x+dx if invert else y+dy
+            length = math.hypot(dx, dy)
         except ZeroDivisionError:
-            self.x = self.y = None
-            self.length = NO_WALL
+            next_x = next_y = None
+            length = NO_WALL
+        return Point((next_x,next_y), length)
+
+    def inspect(self, info, game_map, shift_x, shift_y, distance, offset):
+        """
+        Ran when the step is selected as the next in the ray.
+        Sets the steps self.height, self.distance, and self.shading,
+        to the required values.
+        """
+        dx = shift_x if info.cos<0 else 0
+        dy = shift_y if info.sin<0 else 0
+        self.height = game_map.get(self.x-dx, self.y-dy)
+        self.distance = distance+self.length
+        if shift_x:
+            self.shading = 2 if info.cos<0 else 0
+        else:
+            self.shading = 2 if info.sin<0 else 1
+        self.offset = offset-math.floor(offset)
+        return self
 
 
 class Camera(object):
+    """Handles the projection and rendering of all objects on the screen."""
     def __init__(self, screen, resolution):
         self.screen = screen
         self.width, self.height = self.screen.get_size()
@@ -155,24 +204,35 @@ class Camera(object):
         self.scale = SCALE
 
     def render(self, player, game_map):
+        """Render everything in order."""
         self.draw_sky(player.direction, game_map.sky_box)
         self.draw_columns(player, game_map)
         self.draw_weapon(player.weapon, player.paces)
 
     def draw_sky(self, direction, sky):
+        """Calculate the skies offset so that it wraps, and draw."""
         left = -sky.width*direction/CIRCLE
         self.screen.blit(sky.image, (left,0))
         if left<sky.width-self.width:
             self.screen.blit(sky.image, (left+sky.width,0))
 
     def draw_columns(self, player, game_map):
+        """
+        For every column in the given resolution, cast a ray, and render that
+        column.
+        """
         for column in range(int(self.resolution)):
             angle = self.field_of_view*(column/self.resolution-0.5)
             point = player.x, player.y
-            ray = game_map.cast(point, player.direction+angle, self.range)
+            ray = game_map.cast_ray(point, player.direction+angle, self.range)
             self.draw_column(column, ray, angle, game_map)
 
     def draw_column(self, column, ray, angle, game_map):
+        """
+        Check if a hit occurs in the ray.  Then itterate through each step
+        of the ray (in reverse).  A hit will be rendered
+        (including its shadow).  Rain drops will be drawn for each step.
+        """
         texture = game_map.wall_texture
         left = int(math.floor(column*self.spacing))
         width = int(math.ceil(self.spacing))
@@ -193,6 +253,10 @@ class Camera(object):
             self.draw_rain(step, angle, left, ray_index)
 
     def draw_shadow(self, step, scale_rect, light):
+        """
+        Render the shadow on a column with regards to its distance and
+        shading attribute.
+        """
         shade_value = step.distance+step.shading
         max_light = shade_value/float(self.light_range-light)
         alpha = 255*min(1, max(max_light, 0))
@@ -201,6 +265,10 @@ class Camera(object):
         self.screen.blit(shade_slice, scale_rect)
 
     def draw_rain(self, step, angle, left, ray_index):
+        """
+        Render a number of rain drops to add depth to our scene and mask
+        roughness.
+        """
         rain_drops = int(random.random()**3*ray_index)
         if rain_drops:
             rain = self.project(0.1, angle, step.distance)
@@ -210,6 +278,10 @@ class Camera(object):
             self.screen.blit(drop, (left, random.random()*rain.top))
 
     def draw_weapon(self, weapon, paces):
+        """
+        Calulate new weapon position based on player's pace attribute,
+        and render.
+        """
         bob_x = math.cos(paces*2)*self.scale*6
         bob_y = math.sin(paces*4)*self.scale*6
         left = self.width*0.66+bob_x
@@ -217,6 +289,11 @@ class Camera(object):
         self.screen.blit(weapon.image, (left, top))
 
     def project(self, height, angle, distance):
+        """
+        Find the position on the screen after perspective projection.
+        A minimum value is used for z to prevent slices blowing up to
+        unmanageable sizes when the player is very close.
+        """
         z = max(distance*math.cos(angle),0.2)
         wall_height = self.height*height/float(z)
         bottom = self.height/float(2)*(1+1/float(z))
@@ -224,6 +301,10 @@ class Camera(object):
 
 
 class Control(object):
+    """
+    The core of our program.  Responsible for running our main loop;
+    processing events; updating; and rendering.
+    """
     def __init__(self):
         self.screen = pg.display.get_surface()
         self.clock = pg.time.Clock()
@@ -235,6 +316,9 @@ class Control(object):
         self.camera = Camera(self.screen, 300)
 
     def event_loop(self):
+        """
+        Quit game on a quit event and update self.keys on any keyup or keydown.
+        """
         for event in pg.event.get():
             if event.type == pg.QUIT:
                 self.done = True
@@ -242,6 +326,7 @@ class Control(object):
                 self.keys = pg.key.get_pressed()
 
     def update(self, dt):
+        """Update the game_map and player."""
         self.game_map.update(dt)
         self.player.update(self.keys, dt, self.game_map)
 
@@ -251,6 +336,7 @@ class Control(object):
         pg.display.set_caption(caption)
 
     def main_loop(self):
+        """Process events, update, and render."""
         dt = self.clock.tick(self.fps)/1000.0
         while not self.done:
             self.event_loop()
@@ -262,22 +348,28 @@ class Control(object):
 
 
 def load_resources():
-    global KNIFE_IMAGE, WALL_TEXTURE_IMAGE, SKY_BOX_IMAGE
-    KNIFE_IMAGE = pg.image.load("knife_hand.png").convert_alpha()
-    knife_w, knife_h = KNIFE_IMAGE.get_size()
+    """
+    Return a dictionary of our needed images; loaded, converted, and scaled.
+    """
+    images = {}
+    knife_image = pg.image.load("knife_hand.png").convert_alpha()
+    knife_w, knife_h = knife_image.get_size()
     knife_scale = (int(knife_w*SCALE), int(knife_h*SCALE))
-    KNIFE_IMAGE = pg.transform.smoothscale(KNIFE_IMAGE, knife_scale)
-    WALL_TEXTURE_IMAGE = pg.image.load("wall_texture.jpg").convert()
-    _SKY_SIZE = int(SCREEN_SIZE[0]*(CIRCLE/FIELD_OF_VIEW)), SCREEN_SIZE[1]
-    SKY_BOX_IMAGE = pg.image.load("deathvalley_panorama.jpg").convert()
-    SKY_BOX_IMAGE = pg.transform.smoothscale(SKY_BOX_IMAGE, _SKY_SIZE)
+    images["knife"] = pg.transform.smoothscale(knife_image, knife_scale)
+    images["texture"] = pg.image.load("wall_texture.jpg").convert()
+    sky_size = int(SCREEN_SIZE[0]*(CIRCLE/FIELD_OF_VIEW)), SCREEN_SIZE[1]
+    sky_box_image = pg.image.load("deathvalley_panorama.jpg").convert()
+    images["sky"] = pg.transform.smoothscale(sky_box_image, sky_size)
+    return images
 
 
 def main():
+    """Prepare the display, load images, and get our programming running."""
+    global IMAGES
     os.environ["SDL_VIDEO_CENTERED"] = "True"
     pg.init()
-    screen = pg.display.set_mode(SCREEN_SIZE)
-    load_resources()
+    pg.display.set_mode(SCREEN_SIZE)
+    IMAGES = load_resources()
     Control().main_loop()
     pg.quit()
     sys.exit()
@@ -285,10 +377,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
-
-
-
-
-
-
