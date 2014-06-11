@@ -1,3 +1,9 @@
+"""
+This example allows blocks to have different heights.
+It runs much worse than raycast.py because all rays must be cast
+all the way out to the maximum range.
+"""
+
 import os
 import sys
 import math
@@ -12,7 +18,7 @@ if sys.version_info[0] == 2:
     range = xrange
 
 
-CAPTION = "Ray-Casting with Python"
+CAPTION = "Ray-Casting with Python - Varying Heights"
 SCREEN_SIZE = (1200, 600)
 CIRCLE = 2*math.pi
 SCALE = (SCREEN_SIZE[0]+SCREEN_SIZE[1])/1200.0
@@ -109,21 +115,22 @@ class GameMap(object):
         Generate our map randomly.  In the code below their is a 30% chance
         of a cell containing a wall.
         """
-        coordinates = itertools.product(range(self.size), repeat=2)
-        return {coord : random.random()<0.3 for coord in coordinates}
+        game_map = {}
+        for coord in itertools.product(range(self.size), repeat=2):
+            if random.random()<0.3:
+                game_map[coord] = random.choice((0.6, 1, 1.5))
+        return game_map
 
     def cast_ray(self, point, angle, cast_range):
         """
         The meat of our ray casting program.  Given a point,
         an angle (in radians), and a maximum cast range, check if any
-        collisions with the ray occur.  Casting will stop if a collision is
-        detected (cell with greater than 0 height), or our maximum casting
-        range is exceeded without detecting anything.
+        collisions with the ray occur.
         """
         info = RayInfo(math.sin(angle), math.cos(angle))
         origin = Point(point)
         ray = [origin]
-        while origin.height <= 0 and origin.distance <= cast_range:
+        while origin.distance <= cast_range:
             dist = origin.distance
             step_x = origin.step(info.sin, info.cos)
             step_y = origin.step(info.cos, info.sin, invert=True)
