@@ -202,19 +202,27 @@ class Camera(object):
         self.range = 8
         self.light_range = 5
         self.scale = SCALE
+        self.flash = pg.Surface((self.width, self.height//2)).convert_alpha()
 
     def render(self, player, game_map):
         """Render everything in order."""
-        self.draw_sky(player.direction, game_map.sky_box)
+        self.draw_sky(player.direction, game_map.sky_box, game_map.light)
         self.draw_columns(player, game_map)
         self.draw_weapon(player.weapon, player.paces)
 
-    def draw_sky(self, direction, sky):
-        """Calculate the skies offset so that it wraps, and draw."""
+    def draw_sky(self, direction, sky, ambient_light):
+        """
+        Calculate the skies offset so that it wraps, and draw.
+        If the ambient light is greater than zero, draw lightning flash.
+        """
         left = -sky.width*direction/CIRCLE
         self.screen.blit(sky.image, (left,0))
         if left<sky.width-self.width:
             self.screen.blit(sky.image, (left+sky.width,0))
+        if ambient_light > 0:
+            alpha = 255*min(1, ambient_light*0.1)
+            self.flash.fill((255,255,255,alpha))
+            self.screen.blit(self.flash, (0, self.height//2))
 
     def draw_columns(self, player, game_map):
         """
@@ -229,19 +237,16 @@ class Camera(object):
 
     def draw_column(self, column, ray, angle, game_map):
         """
-        Check if a hit occurs in the ray.  Then itterate through each step
-        of the ray (in reverse).  A hit will be rendered
-        (including its shadow).  Rain drops will be drawn for each step.
+        Examine each step of the ray, starting with the furthest.
+        If the height is greater than zero, render the column (and shadow).
+        Rain drops will be drawn for every step.
         """
-        texture = game_map.wall_texture
         left = int(math.floor(column*self.spacing))
-        width = int(math.ceil(self.spacing))
-        hit = 0
-        while hit < len(ray) and ray[hit].height <= 0:
-            hit += 1
         for ray_index in range(len(ray)-1, -1, -1):
             step = ray[ray_index]
-            if ray_index == hit:
+            if step.height > 0:
+                texture = game_map.wall_texture
+                width = int(math.ceil(self.spacing))
                 texture_x = int(math.floor(texture.width*step.offset))
                 wall = self.project(step.height, angle, step.distance)
                 image_location = pg.Rect(texture_x, 0, 1, texture.height)
@@ -258,7 +263,7 @@ class Camera(object):
         shading attribute.
         """
         shade_value = step.distance+step.shading
-        max_light = shade_value/float(self.light_range-light)
+        max_light = shade_value/float(self.light_range)-light
         alpha = 255*min(1, max(max_light, 0))
         shade_slice = pg.Surface(scale_rect.size).convert_alpha()
         shade_slice.fill((0,0,0,alpha))
